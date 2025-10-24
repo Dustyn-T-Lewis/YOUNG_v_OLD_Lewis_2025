@@ -2,9 +2,12 @@
 # Setup
 # ===============================================================
 
-setwd("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working")
+setwd("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working/Proteomics_YvO_Master")
 
-if (!requireNamespace("pacman", quietly = TRUE)) install.packages("pacman")
+if (!requireNamespace("pacman", quietly = TRUE)) {
+  options(repos = c(CRAN = "https://cran.rstudio.com/"))
+  install.packages("pacman")
+}
 library(pacman)
 p_load(readxl, dplyr, stringr)
 

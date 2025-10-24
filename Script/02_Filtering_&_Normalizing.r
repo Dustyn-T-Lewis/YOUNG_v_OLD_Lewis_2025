@@ -1,7 +1,10 @@
 # ===============================================================
 # INSTALL
 # ===============================================================
-setwd("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working")
+setwd("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working/Proteomics_YvO_Master")
+
+# Set CRAN mirror
+options(repos = c(CRAN = "https://cran.rstudio.com/"))
 
 install.packages("devtools")
 devtools::install_github("ByrumLab/proteoDA", 
@@ -16,7 +19,7 @@ p_load(
 # ===============================================================
 # IMPORT & DATA SETUP
 # ===============================================================
-input_data <- read.csv("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working/01_Cleaning_&_Filtering/01_cleaned.csv")
+input_data <- read.csv("01_Cleaning_&_Filtering/01_cleaned.csv")
 
 # Create a sample metadata dataframe from row names
 sample_metadata <- data.frame(
@@ -129,7 +132,7 @@ df <- data.frame(
   Group = rep((normalized$metadata)$Group, each = nrow(normalized$data))
 )
 
-ggplot(df, aes(Sample, Intensity, fill = Group)) +
+p <- ggplot(df, aes(Sample, Intensity, fill = Group)) +
   geom_violin(scale = "width") +
   geom_boxplot(width = 0.1, outlier.size = 0.5, alpha = 0.5) +
   theme_bw() +
