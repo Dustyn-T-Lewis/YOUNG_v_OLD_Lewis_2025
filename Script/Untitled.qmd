@@ -1,0 +1,369 @@
+---
+title: "Proteomics Normalization"
+format: pdf
+editor: visual
+---
+
+# Data Handling
+
+## Setup
+
+```{r environment setup}
+# ===============================================================
+# SETUP
+# ===============================================================
+
+setwd("~/Library/CloudStorage/Box-Box/Proteomics_YvO_Master/Working/00_Cleaning_&_Filtering")
+
+# --- Install and load dependencies ---
+if (!requireNamespace(c("pacman","devtools","BiocManager"), quietly = TRUE)) {install.packages(c("pacman","devtools","BiocManager"))}
+library(pacman)
+devtools::install_github("ByrumLab/proteoDA",
+                         dependencies = TRUE,
+                         build_vignettes = TRUE)
+p_load(proteoDA, dplyr, ggplot2,tidyr, stringr, DT, ggpubr, knitr, readr, readxl)
+
+```
+
+## Load Data
+
+```{r load data}
+
+
+# ===============================================================
+# LOAD DATA 
+# ===============================================================
+
+filtered_df <- read.csv("00_Cleaning_&_Filtering/04_final.csv")
+intensity_mat <- read.csv("00_Cleaning_&_Filtering/03_intensity.csv")
+annotation_mat <- read.csv("00_Cleaning_&_Filtering/03_annotations.csv")
+```
+
+## Create Metadata
+
+```{r create metadata}
+
+# ===============================================================
+# CREATE SAMPLE METADATA
+# ===============================================================
+
+sample_metadata <- data.frame(
+  Samples = colnames(intensity_mat)
+) %>%
+  mutate(
+    AgeGroup   = if_else(str_detect(Samples, "Young"), "Young", "Old"),
+    Timepoint  = if_else(str_detect(Samples, "Post"), "Post", "Pre"),
+    GroupLabel = paste(AgeGroup, Timepoint, sep = "_")
+  )
+
+rownames(sample_metadata) <- sample_metadata$Samples
+
+```
+
+## DAList package-specific
+
+```{r DAList}
+
+# ===============================================================
+# CREATE DAList OBJECT
+# ===============================================================
+
+DAList <- DAList(
+  data       = intensity_mat,
+  annotation = annotation_mat,
+  metadata   = sample_metadata
+)
+
+```
+
+# Normalization
+
+## Write Normalization Report
+
+```{r normalization report}
+
+# ===============================================================
+# NORMALIZATION & QUALITY CONTROL
+# ===============================================================
+
+# --- Create output folder for reports ---
+if (!dir.exists("01_PreProcess_Reports")) dir.create("01_PreProcess_Reports")
+
+# ---------------------------------------------------------------
+# STEP 1: Evaluate normalization methods
+# ---------------------------------------------------------------
+
+write_norm_report(DAList,
+  grouping_column = "GroupLabel",
+  output_dir = "01_PreProcess_Reports",
+  filename = "01_Normalization_Report.pdf",
+  overwrite = TRUE,
+  suppress_zoom_legend = FALSE,
+  use_ggrastr = FALSE
+)
+
+```
+
+## Apply Normalization
+
+```{r apply normalization}
+
+# ---------------------------------------------------------------
+# STEP 2: Apply chosen normalization method
+# ---------------------------------------------------------------
+
+normalized <- normalize_data(
+  DAList,
+  norm_method = "cycloess"   # chosen based on best report metrics
+)
+```
+
+## Generate Normalization Report
+
+```{r generate normalization report}
+
+# ---------------------------------------------------------------
+# STEP 3: Normalization Report
+# ---------------------------------------------------------------
+write_qc_report(
+  normalized,
+  color_column = "GroupLabel",          # color samples by group
+  label_column = NULL,
+  output_dir = "01_PreProcess_Reports",
+  filename = "02_QC_Report_Group.pdf",
+  overwrite = T,
+  top_proteins = 200,                   # most variable proteins for PCA
+  standardize = TRUE,                   # z-scale features for PCA
+  pca_axes = c(1, 2),                   # first 2 PCs
+  dist_metric = "maximum",            # distance metric for clustering
+  clust_method = "ward.D",            # hierarchical clustering linkage
+  show_all_proteins = FALSE             # omit fully complete rows from missingness plot
+)
+
+# ===============================================================
+# INTENSITY DISTRIBUTION COMPARISON (Pre vs Post Normalization)
+# ===============================================================
+
+# --- After normalization ---
+int_df <- as.data.frame(normalized$data) %>%
+  pivot_longer(cols = everything(), names_to = "Sample", values_to = "Intensity") %>%
+  left_join(normalized$metadata, by = c("Sample" = "Samples")) %>%
+  mutate(Stage = "After Normalization")
+
+# --- Before normalization (apply log2 to make comparable scale) ---
+filt_df <- as.data.frame(filtered_df[, 2:65]) %>%
+  pivot_longer(cols = everything(), names_to = "Sample", values_to = "Intensity") %>%
+  mutate(Intensity = log2(Intensity + 1)) %>%   # 👈 key fix: log-transform to match normalized scale
+  left_join(normalized$metadata, by = c("Sample" = "Samples")) %>%
+  mutate(Stage = "Before Normalization")
+
+# --- Combine datasets ---
+combined_df <- bind_rows(int_df, filt_df)
+
+# --- Plot ---
+ggplot(combined_df, aes(x = Sample, y = Intensity, fill = GroupLabel)) +
+  geom_violin(scale = "width", color = "black", alpha = 0.8) +
+  facet_wrap(~ Stage, ncol = 1, scales = "free_y") +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+    strip.text = element_text(face = "bold", size = 12)
+  ) +
+  labs(
+    title = "Protein Intensity Distributions Before and After Normalization",
+    y = "log2(Intensity)",
+    x = "Sample"
+  ) +
+  scale_fill_brewer(palette = "Set2")
+
+# --- Save plot ---
+ggsave("01_PreProcess_Reports/02_Intensity_Distribution_Before_After_Normalization.png",
+       width = 9, height = 6, dpi = 300)
+```
+
+## Save
+
+```{r save}
+
+# ---------------------------------------------------------------
+# SAVE
+# ---------------------------------------------------------------
+
+# Extract normalized intensities
+normalized_intensity <- normalized$intensity
+
+# Extract annotation and sample metadata
+annotation_data <- normalized$annotation
+sample_metadata <- normalized$sample_metadata
+
+# Save the matrices to CSV
+write.csv(normalized_intensity, "01_PreProcess_Reports/03_normalized.csv", row.names = TRUE)
+write.csv(annotation_data, "01_PreProcess_Reports/03_annotation.csv", row.names = TRUE)
+write.csv(sample_metadata, "01_PreProcess_Reports/03_sample_metadata.csv", row.names = TRUE)
+```
+
+# Modeling
+
+```{r modeling}
+# ===============================================================
+# MODELING
+# ===============================================================
+
+if (!dir.exists("02_DA_results")) dir.create("02_DA_results")
+if (!dir.exists("02_DA_results/Plots")) dir.create("02_DA_results/Plots")
+if (!dir.exists("02_DA_results/Tables")) dir.create("02_DA_results/Tables")
+
+
+
+# Use a no-intercept model so each group’s mean is estimated directly
+no_intercept <- normalized |>
+  add_design(design_formula = ~ 0 + GroupLabel)
+
+# Define all desired contrasts together inside one vector
+contrasts_vec <- c(
+  "Aging_Old_vs_Young_at_Pre = Old_Pre - Young_Pre",
+  "Training_in_Young = Young_Post - Young_Pre",
+  "Training_in_Old = Old_Post - Old_Pre",
+  "Interaction_Age_x_Train = (Old_Post - Old_Pre) - (Young_Post - Young_Pre)"
+)
+
+contrasts_vec <- c(
+# BASELINE AGE EFFECT
+  "Baseline_Aging = Old_Pre - Young_Pre",
+  
+# WITHIN-GROUP TRAINING EFFECTS
+  "Young_Training = Young_Post - Young_Pre",
+  "Old_Training   = Old_Post - Old_Pre",
+
+# SHARED OR GLOBAL TRAINING EFFECTS
+    # Consistent training response across both age groups (both ↑ or both ↓)
+  "Shared_Training_Response = (Old_Post - Old_Pre) + (Young_Post - Young_Pre)",
+
+   # Main effect of training averaged across all participants
+  "Main_Training_Effect = ((Old_Post + Young_Post)/2) - ((Old_Pre + Young_Pre)/2)",
+
+
+# AGE × TRAINING INTERACTION
+   # Whether training responses differ between age groups (magnitude or direction)
+  "Interaction_Age_x_Traing = (Old_Post - Old_Pre) - (Young_Post - Young_Pre)",
+
+# OPPOSITE AND CONCORDANT TRAINING DIRECTIONS
+   # Proteins changing in opposite directions between groups
+  "Opposite_Training_Response = (Old_Post - Old_Pre) - (Young_Post - Young_Pre)",
+
+   # Proteins changing in the same direction (both up or both down)
+  "Concordant_Training_Response = (Old_Post - Old_Pre) + (Young_Post - Young_Pre)",
+
+# TRAINING VS BASELINE DIFFERENCE COMBINATIONS
+   # Age-dependent baseline difference carried through training
+  "Age_Baseline_Influence_on_Training = (Old_Post - Young_Post) - (Old_Pre - Young_Pre)",
+
+   # Training effect compared directly between groups (Old training vs Young training)
+  "Old_vs_Young_Training = (Old_Post - Old_Pre) - (Young_Post - Young_Pre)"
+)
+
+# Apply contrasts
+no_intercept <- add_contrasts(
+  no_intercept,
+  contrasts_vector = contrasts_vec
+)
+
+final <- no_intercept |> fit_limma_model() |>
+  extract_DA_results(pval_thresh = 0.05,
+                     lfc_thresh = .26, adj_method = "BH", extract_intercept = F)
+
+write_limma_tables(final,
+                   output_dir = "02_DA_results/Tables", 
+                   overwrite = T, 
+                   contrasts_subdir = NULL, 
+                   summary_csv=NULL, 
+                   combined_file_csv = NULL, 
+                   spreadsheet_xlsx = NULL, 
+                   add_filter = T)
+
+write_limma_plots(final,
+                  grouping_column = "GroupLabel",
+                  table_columns = c("Gene","uniprot_id"), title_column = "Gene",
+                  output_dir = "02_DA_results/Plots", tmp_subdir = "tmp",
+                  height = 1000,
+                  width = 1000,
+                  overwrite = T)
+
+```
+
+# Summaries
+
+```{r}
+# ===============================================================
+# Summary of Differentially Abundant Proteins
+# ===============================================================
+
+
+```
+
+```{r}
+# ===============================================================
+# STEP 8: Plot Shared vs Divergent Training Responses
+# ===============================================================
+
+library(tidyverse)
+
+# Extract results for Training contrasts
+young <- final$Training_in_Young
+old   <- final$Training_in_Old
+
+# Join and classify response patterns
+joined <- full_join(young, old, by = "Gene", suffix = c("_Y", "_O")) %>%
+  mutate(ResponsePattern = case_when(
+    logFC_Y > 0 & logFC_O > 0 ~ "Shared Up",
+    logFC_Y < 0 & logFC_O < 0 ~ "Shared Down",
+    logFC_Y > 0 & logFC_O < 0 ~ "Opposite (Up in Young, Down in Old)",
+    logFC_Y < 0 & logFC_O > 0 ~ "Opposite (Down in Young, Up in Old)",
+    TRUE ~ "Other"
+  ))
+
+# Summarize counts per pattern
+pattern_summary <- joined %>%
+  count(ResponsePattern) %>%
+  mutate(ResponsePattern = factor(
+    ResponsePattern,
+    levels = c(
+      "Shared Up",
+      "Shared Down",
+      "Opposite (Up in Young, Down in Old)",
+      "Opposite (Down in Young, Up in Old)",
+      "Other"
+    )
+  ))
+
+# Define custom color palette (consistent with your study aesthetic)
+pattern_colors <- c(
+  "Shared Up" = "#1B9E77",       # green
+  "Shared Down" = "#D95F02",     # orange
+  "Opposite (Up in Young, Down in Old)" = "#7570B3", # purple
+  "Opposite (Down in Young, Up in Old)" = "#E7298A", # magenta
+  "Other" = "grey80"
+)
+
+# Create the bar plot
+ggplot(pattern_summary, aes(x = ResponsePattern, y = n, fill = ResponsePattern)) +
+  geom_bar(stat = "identity", width = 0.7, color = "black", linewidth = 0.25) +
+  scale_fill_manual(values = pattern_colors) +
+  geom_text(aes(label = n), vjust = -0.3, size = 4.2) +
+  theme_bw(base_size = 13) +
+  labs(
+    title = "Training Response Patterns Between Age Groups",
+    x = NULL,
+    y = "Number of Proteins"
+  ) +
+  theme(
+    plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "none",
+    panel.grid = element_blank()
+  )
+
+# Save the figure
+ggsave("02_DA_results/Tables/Training_Response_Patterns.png",
+       width = 7, height = 4.5, dpi = 300)
+```
